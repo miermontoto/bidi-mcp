@@ -1,0 +1,12 @@
+[Unit]
+Description=BiDi MCP server for Zen/Firefox browser
+
+[Service]
+Type=simple
+ExecStart=%h/dev/bidi-mcp/start.sh
+WorkingDirectory=%h/dev/bidi-mcp
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -8,9 +8,16 @@
  * requiere: Node >= 22 (WebSocket built-in), Zen lanzado con --remote-debugging-port=9222
  */
 
+import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+
+// ─── modo de transporte ─────────────────────────────────────────────────────────
+
+const httpFlagIdx = process.argv.indexOf("--http");
+const HTTP_PORT = httpFlagIdx !== -1 ? Number(process.argv[httpFlagIdx + 1]) || 3100 : null;
 
 // ─── configuración ──────────────────────────────────────────────────────────────
 
@@ -47,7 +54,14 @@ function connect() {
       log("[bidi-mcp] connected to", BIDI_URL);
       try {
         // crear sesion BiDi (requerido antes de cualquier comando)
-        const session = await bidiSend("session.new", { capabilities: {} });
+        const session = await bidiSend("session.new", {
+          capabilities: {
+            alwaysMatch: { "moz:firefoxOptions": { prefs: {
+              "remote.prefs.recommended": false,
+              "focusmanager.testmode": false,
+            } } },
+          },
+        });
         hasSession = true;
         log("[bidi-mcp] session created:", session.sessionId);
         // suscribirse a eventos de consola
@@ -172,131 +186,128 @@ function textResult(text) {
 
 // ─── herramientas MCP ───────────────────────────────────────────────────────────
 
-const server = new McpServer({ name: "zen-bidi", version: "1.0.0" });
+function createMcpServer() {
+  const server = new McpServer({ name: "zen-bidi", version: "1.0.0" });
 
-// evaluar JS
-server.tool(
-  "evaluate",
-  "Execute JavaScript in the active browser tab and return the result",
-  { expression: z.string().describe("JS expression to evaluate"), tab: z.string().optional().describe("browsing context ID (from tabs tool)") },
-  async ({ expression, tab }) => {
-    try {
-      await ensureConnected();
-      const ctx = await getActiveContext(tab);
-      const result = await bidiSend("script.evaluate", {
-        expression,
-        target: { context: ctx },
-        awaitPromise: true,
-        resultOwnership: "none",
-      });
-      if (result.exceptionDetails) {
-        const text = result.exceptionDetails.text
-          || result.exceptionDetails.exception?.value
-          || JSON.stringify(result.exceptionDetails);
-        return errResult(`Exception: ${text}`);
+  server.tool(
+    "evaluate",
+    "Execute JavaScript in the active browser tab and return the result",
+    { expression: z.string().describe("JS expression to evaluate"), tab: z.string().optional().describe("browsing context ID (from tabs tool)") },
+    async ({ expression, tab }) => {
+      try {
+        await ensureConnected();
+        const ctx = await getActiveContext(tab);
+        const result = await bidiSend("script.evaluate", {
+          expression,
+          target: { context: ctx },
+          awaitPromise: true,
+          resultOwnership: "none",
+        });
+        if (result.exceptionDetails) {
+          const text = result.exceptionDetails.text
+            || result.exceptionDetails.exception?.value
+            || JSON.stringify(result.exceptionDetails);
+          return errResult(`Exception: ${text}`);
+        }
+        return textResult(formatBidiValue(result.result));
+      } catch (e) {
+        return errResult(e.message);
       }
-      return textResult(formatBidiValue(result.result));
-    } catch (e) {
-      return errResult(e.message);
     }
-  }
-);
+  );
 
-// screenshot
-server.tool(
-  "screenshot",
-  "Capture a PNG screenshot of the browser tab",
-  { tab: z.string().optional().describe("browsing context ID") },
-  async ({ tab }) => {
-    try {
-      await ensureConnected();
-      const ctx = await getActiveContext(tab);
-      const result = await bidiSend("browsingContext.captureScreenshot", { context: ctx });
-      return { content: [{ type: "image", data: result.data, mimeType: "image/png" }] };
-    } catch (e) {
-      return errResult(e.message);
+  server.tool(
+    "screenshot",
+    "Capture a PNG screenshot of the browser tab",
+    { tab: z.string().optional().describe("browsing context ID") },
+    async ({ tab }) => {
+      try {
+        await ensureConnected();
+        const ctx = await getActiveContext(tab);
+        const result = await bidiSend("browsingContext.captureScreenshot", { context: ctx });
+        return { content: [{ type: "image", data: result.data, mimeType: "image/png" }] };
+      } catch (e) {
+        return errResult(e.message);
+      }
     }
-  }
-);
+  );
 
-// navegar
-server.tool(
-  "navigate",
-  "Navigate the browser tab to a URL",
-  { url: z.string().describe("URL to navigate to"), tab: z.string().optional().describe("browsing context ID") },
-  async ({ url, tab }) => {
-    try {
-      await ensureConnected();
-      const ctx = await getActiveContext(tab);
-      const result = await bidiSend("browsingContext.navigate", { context: ctx, url, wait: "complete" });
-      return textResult(`navigated to ${result.url}`);
-    } catch (e) {
-      return errResult(e.message);
+  server.tool(
+    "navigate",
+    "Navigate the browser tab to a URL",
+    { url: z.string().describe("URL to navigate to"), tab: z.string().optional().describe("browsing context ID") },
+    async ({ url, tab }) => {
+      try {
+        await ensureConnected();
+        const ctx = await getActiveContext(tab);
+        const result = await bidiSend("browsingContext.navigate", { context: ctx, url, wait: "complete" });
+        return textResult(`navigated to ${result.url}`);
+      } catch (e) {
+        return errResult(e.message);
+      }
     }
-  }
-);
+  );
 
-// recargar
-server.tool(
-  "reload",
-  "Reload the current page in the browser tab",
-  { tab: z.string().optional().describe("browsing context ID") },
-  async ({ tab }) => {
-    try {
-      await ensureConnected();
-      const ctx = await getActiveContext(tab);
-      await bidiSend("browsingContext.reload", { context: ctx, wait: "complete" });
-      return textResult("page reloaded");
-    } catch (e) {
-      return errResult(e.message);
+  server.tool(
+    "reload",
+    "Reload the current page in the browser tab",
+    { tab: z.string().optional().describe("browsing context ID") },
+    async ({ tab }) => {
+      try {
+        await ensureConnected();
+        const ctx = await getActiveContext(tab);
+        await bidiSend("browsingContext.reload", { context: ctx, wait: "complete" });
+        return textResult("page reloaded");
+      } catch (e) {
+        return errResult(e.message);
+      }
     }
-  }
-);
+  );
 
-// listar tabs
-server.tool(
-  "tabs",
-  "List all open browser tabs with their URLs and titles",
-  {},
-  async () => {
-    try {
-      await ensureConnected();
-      const result = await bidiSend("browsingContext.getTree", {});
-      // solo contextos top-level (sin parent), ignorar iframes
-      const tabs = (result.contexts || [])
-        .filter((ctx) => ctx.parent === null || ctx.parent === undefined)
-        .map((ctx) => ({
-          id: ctx.context,
-          url: ctx.url,
-        }));
-      return textResult(JSON.stringify(tabs, null, 2));
-    } catch (e) {
-      return errResult(e.message);
+  server.tool(
+    "tabs",
+    "List all open browser tabs with their URLs and titles",
+    {},
+    async () => {
+      try {
+        await ensureConnected();
+        const result = await bidiSend("browsingContext.getTree", {});
+        const tabs = (result.contexts || [])
+          .filter((ctx) => ctx.parent === null || ctx.parent === undefined)
+          .map((ctx) => ({
+            id: ctx.context,
+            url: ctx.url,
+          }));
+        return textResult(JSON.stringify(tabs, null, 2));
+      } catch (e) {
+        return errResult(e.message);
+      }
     }
-  }
-);
+  );
 
-// mensajes de consola
-server.tool(
-  "console_messages",
-  "Get recent console messages from the browser (buffered since connection)",
-  {
-    limit: z.number().optional().default(50).describe("max messages to return"),
-    level: z.enum(["all", "log", "warn", "error", "info", "debug"]).optional().default("all").describe("filter by log level"),
-  },
-  async ({ limit, level }) => {
-    const filtered = level === "all"
-      ? consoleBuffer
-      : consoleBuffer.filter((e) => e.level === level);
-    const entries = filtered.slice(-limit);
-    if (!entries.length) return textResult("(no console messages captured)");
-    const lines = entries.map((e) => {
-      const ts = e.timestamp ? new Date(e.timestamp).toISOString().slice(11, 23) : "???";
-      return `[${ts}] ${(e.level || "log").padEnd(5)} ${e.text}`;
-    });
-    return textResult(lines.join("\n"));
-  }
-);
+  server.tool(
+    "console_messages",
+    "Get recent console messages from the browser (buffered since connection)",
+    {
+      limit: z.number().optional().default(50).describe("max messages to return"),
+      level: z.enum(["all", "log", "warn", "error", "info", "debug"]).optional().default("all").describe("filter by log level"),
+    },
+    async ({ limit, level }) => {
+      const filtered = level === "all"
+        ? consoleBuffer
+        : consoleBuffer.filter((e) => e.level === level);
+      const entries = filtered.slice(-limit);
+      if (!entries.length) return textResult("(no console messages captured)");
+      const lines = entries.map((e) => {
+        const ts = e.timestamp ? new Date(e.timestamp).toISOString().slice(11, 23) : "???";
+        return `[${ts}] ${(e.level || "log").padEnd(5)} ${e.text}`;
+      });
+      return textResult(lines.join("\n"));
+    }
+  );
+
+  return server;
+}
 
 // ─── cleanup ────────────────────────────────────────────────────────────────────
 
@@ -315,6 +326,52 @@ process.on("SIGTERM", async () => { await cleanup(); process.exit(0); });
 
 // ─── bootstrap ──────────────────────────────────────────────────────────────────
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-log("[bidi-mcp] server running on stdio");
+if (HTTP_PORT) {
+  // modo HTTP: proceso unico compartido entre multiples claude codes
+  // cada sesion MCP necesita su propia instancia de McpServer
+  const sessions = new Map(); // sessionId -> { transport, server }
+
+  const httpServer = createServer(async (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id");
+    res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    const sessionId = req.headers["mcp-session-id"];
+
+    if (sessionId && sessions.has(sessionId)) {
+      await sessions.get(sessionId).transport.handleRequest(req, res);
+      return;
+    }
+
+    // nueva sesion: crear server + transport dedicados
+    const mcpServer = createMcpServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+    });
+
+    transport.onclose = () => {
+      if (transport.sessionId) sessions.delete(transport.sessionId);
+    };
+
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res);
+    if (transport.sessionId) sessions.set(transport.sessionId, { transport, server: mcpServer });
+  });
+
+  httpServer.listen(HTTP_PORT, "127.0.0.1", () => {
+    log(`[bidi-mcp] HTTP server listening on http://127.0.0.1:${HTTP_PORT}/mcp`);
+  });
+} else {
+  // modo stdio: un proceso por claude code (default)
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  log("[bidi-mcp] server running on stdio");
+}
