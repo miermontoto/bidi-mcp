@@ -1,0 +1,13 @@
+{
+  "name": "bidi-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "main": "server.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^3.24.0"
+  },
+  "pnpm": { "neverBuiltDependencies": [] }
+}
