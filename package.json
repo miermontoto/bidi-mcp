@@ -6,7 +6,7 @@
   "engines": { "node": ">=22" },
   "main": "server.mjs",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "zod": "^3.24.0"
   },
   "pnpm": { "neverBuiltDependencies": [] }
